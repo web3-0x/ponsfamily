@@ -29,7 +29,7 @@
 This repository holds the Solidity source for the [ponsfamily.com](https://ponsfamily.com) token launchpad on Robinhood Chain, in both generations:
 
 - **V1** (`contractsV1/`) — a CREATE2 factory that mints a fixed-supply ERC-20, opens a one-sided Uniswap **V3** position, locks the position NFT, and can run a developer buy in the same transaction.
-- **V2** (`contractsV2/`) — a launch flow where the full supply mints to a constant-product **bonding curve** that trades in the pool's future quote asset, then graduates permanently into a locked full-range Uniswap **V4** pool governed by a shared hook, with quote-denominated fees, a creator tax, a fee escrow and a five-year buyback vault.
+- **V2** (`contractsV2/`) — a launch flow where the full supply mints to a constant-product **bonding curve** that trades in the pool's future quote asset, then graduates permanently into a locked full-range Uniswap **V4** pool governed by a shared hook, with quote-denominated fees, a creator tax, a fee escrow, a five-year buyback vault and an atomic launch-and-buy router.
 
 Both generations are live source and both factories are verified on chain.
 
@@ -112,9 +112,11 @@ Uniswap V3 factory/pool/position-manager shapes, SwapRouter02 and classic router
 
 ## V2 — bonding curve + graduated Uniswap V4 pool
 
-> 📖 **深度文档（中文）**: [`contractsV2/README.md`](contractsV2/README.md) — V2 完整业务逻辑、费用模型、权限与治理、救援路径，以及全部 61 个事件的逐字段解释。
+> 📖 **深度文档（中文）**
+> - [`contractsV2/README.md`](contractsV2/README.md) — V2 完整业务逻辑、费用模型、权限与治理、救援路径，以及全部 67 个事件的逐字段解释。
+> - [`docs/pons-v2-indexer-spec.md`](docs/pons-v2-indexer-spec.md) — 后端索引器蓝图：事件目录（含实算 topic0）、索引器架构、82 张数据库表、派生指标算法与 API 契约。
 >
-> A full Chinese-language deep dive into V2's business logic, fee model, governance and all 61 events lives in [`contractsV2/README.md`](contractsV2/README.md).
+> Chinese-language deep dives: V2 contract internals and all 67 events in [`contractsV2/README.md`](contractsV2/README.md); the backend indexer and database blueprint in [`docs/pons-v2-indexer-spec.md`](docs/pons-v2-indexer-spec.md).
 
 V2 replaces day-one concentrated liquidity with a fair-launch curve. Every launch mints its full supply to its own bonding curve, which **trades in the same quote asset its future V4 pool will use** (native ETH, or a chosen ERC-20 `pairToken`). Because the curve collects the eventual pool asset from the very first trade, graduation seeds the pool directly — no router, no swap, and no price oracle anywhere in the system.
 
@@ -195,10 +197,13 @@ V2 replaces day-one concentrated liquidity with a fair-launch curve. Every launc
     │   ├── PonsV2GraduationExecutor.sol
     │   ├── PonsV2LaunchLocker.sol
     │   ├── PonsV2BuybackVault.sol
+    │   ├── PonsV2LaunchAndBuy.sol    # atomic launch + dev buy (launchForwarder)
+    │   ├── V2FeeEscrow.sol           # claimable-balance ledger
     │   ├── hooks/PonsV2MemeHook.sol
     │   ├── interfaces/
     │   │   ├── ILaunchpadV2.sol
-    │   │   └── ILaunchpadV2Graduation.sol
+    │   │   ├── ILaunchpadV2Graduation.sol
+    │   │   └── IV2FeeEscrow.sol      # unused duplicate — see contractsV2/README.md
     │   └── libraries/
     │       ├── PonsV2BondingCurveMath.sol
     │       └── PonsV2GraduationMath.sol

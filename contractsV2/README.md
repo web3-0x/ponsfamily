@@ -40,11 +40,14 @@ Pons V2 是一套 memecoin 发射台（launchpad）合约。它的核心思路�
 | `PonsV2GraduationExecutor` | 209 | 毕业时铸造 V4 全区间仓位。拆出来纯粹是为了让 Factory 字节码不超 EIP-170 |
 | `PonsV2LaunchDeployer` | 149 | 用 CREATE2 部署曲线与代币。拆出来同样是为了 Factory 的体积 |
 | `PonsV2LaunchLocker` | 123 | 永久持有毕业后的 V4 仓位 NFT 与锁死的代币余量。**没有任何提取函数** |
+| `V2FeeEscrow` | 137 | 单例。所有收款人的可领取余额账本（原生 ETH + 每种 ERC-20 各一套），收款人自行 `claim` |
+| `PonsV2LaunchAndBuy` | 213 | 外围路由器。原子化"发射 + 开发者首单"，是 Factory 唯一信任的 `launchForwarder` |
 | `PonsV2GraduationGuard` | 125 | 无状态预检。在不可逆的资产移交之前，模拟 V4 铸造会不会被拒 |
 | `PonsV2LauncherToken` | 106 | 固定供应量 ERC-20。全部供应量在构造函数里铸给曲线 |
 | `libraries/PonsV2BondingCurveMath` | 88 | 恒定乘积定价（`getAmountOut` / `quoteAmountOut` / `getAmountIn`） |
 | `libraries/PonsV2GraduationMath` | 63 | 从两侧金额反推 V4 开池所需的 `sqrtPriceX96` |
-| `interfaces/ILaunchpadV2` | 139 | 共享接口：费用托管、费用政策、发射记录、毕业阶段枚举 |
+| `interfaces/ILaunchpadV2` | 150 | 共享接口：费用托管、费用政策、发射记录、毕业阶段枚举 |
+| `interfaces/IV2FeeEscrow` | 139 | ⚠️ **死代码** —— 把上一行的类型以 `IV2*` 前缀重复声明了一遍，无人 import（见[已知缺口 3](#3-interfacesiv2feeescrowsol-是死代码)） |
 
 ### 依赖拓扑
 
@@ -514,7 +517,7 @@ Owner 覆写：setCreatorFeeRecipient(token, newRecipient)
 
 ## 事件详解
 
-全部 **61 个**自定义事件。此外还会发出继承来的 `Ownable2Step` 事件（`OwnershipTransferStarted`、`OwnershipTransferred`）与 ERC-20 的 `Transfer` / `Approval`。
+全部 **67 个**自定义事件。此外还会发出继承来的 `Ownable2Step` 事件（`OwnershipTransferStarted`、`OwnershipTransferred`）与 ERC-20 的 `Transfer` / `Approval`。
 
 > **索引器警告**：`CreatorFeeRecipientUpdated`、`BuybackEnabledUpdated`、`FactorySet` 这几个名字在**多个合约里重复出现且签名不同**。务必按合约地址而不是仅按事件名来解析。
 
@@ -783,6 +786,47 @@ Factory 在任何一次收款人变更中转发过来时发出。**已归属但�
 
 ---
 
+### V2FeeEscrow（4 个）
+
+费用收入的**权威账本**。曲线、Hook、回购金库的所有派付都经由它记账，收款人自行提取。
+
+**`Credited(address indexed recipient, address indexed depositor, uint256 amount)`**
+原生 ETH 入账。`depositor` 是实际充值者（曲线 / Hook / 金库 / 任意第三方）。`msg.value == 0` 时静默返回，不发出。
+
+**`CreditedToken(address indexed recipient, address indexed token, address indexed depositor, uint256 amount)`**
+ERC-20 入账（非原生报价资产的发射）。
+- **`amount` 是实测余额差**，不是调用者请求的名义值。理由与协议其他 ERC-20 边界一致：记录一个从未真正收到的名义额，会让账本的负债超过实际持有量，最后一个提取该资产的收款人会被饿死。
+- 实测到账为 0 时静默返回，不发出。
+
+> **两个必须注意的语义**
+>
+> 1. **`credit` / `creditToken` 完全无权限。** 任何人都能给任意地址充值 —— 合约层面无需设限，因为调用者只能加自己已附带（或已授权持有）的价值。但这意味着**余额里可能混入与协议无关的第三方充值**，链下统计协议收入时必须按 `depositor` 白名单过滤。
+> 2. **提取可以是部分的。** `claim(amount)` / `claimToken(token, amount)` 两个带额度的重载存在是有原因的：余额聚合了该收款人在所有发射、曲线、Hook 与回购释放上的收入，而 `creditToken` 无权限，所以第三方可以随意抬高这个数字。若某报价资产存在单笔转账上限，一次全额提取就会永久 revert，收款人将一分也取不出来。选择额度让聚合余额不成为单点故障。
+
+**`Claimed(address indexed recipient, uint256 amount)`**
+原生提现成功。余额为 0 时 `revert NoBalance()`；请求额超过余额时 `revert InsufficientBalance(requested, available)`。
+
+**`ClaimedToken(address indexed recipient, address indexed token, uint256 amount)`**
+ERC-20 提现成功。同上两种 revert。
+
+### PonsV2LaunchAndBuy（2 个）
+
+**`Launched(address indexed token, address indexed curve, address indexed recipient, address launcher, uint256 quoteSpent, uint256 tokensReceived)`**
+原子发射 + 首单全部完成后发出（在退款之后）。
+- `launcher` 是 `msg.sender`，即**真实发起人**。路由器把它传给 `launchTokenFor`，所以 CREATE2 地址按发起账户命名空间化、发射记录也归属该账户而非路由器。
+- `recipient` 收取买到的代币，**会被自动追加进狙击税豁免列表**（首单必然落在税率峰值的那一秒）。因此调用方最多只能自行声明 **31** 个豁免地址（Factory 的上限是含追加项的 32）。
+- **`quoteSpent` 是请求额（入参 `quoteIn`），不是实付额。** 若曲线部分成交（撞上 `reservedTokens` 地板），差额由曲线退给路由器、再由路由器退给 `msg.sender`。实付额只能取同 tx 的 `CurveBuy.quoteIn`。
+- 一次原子发射涉及**三个可能互不相同的地址**：`launcher`（发起人）、`recipient`（收币人）、`params.creatorFeeRecipient`（费用受益人）。
+
+> **⚠️ 索引陷阱：这条路径下 `CurveBuy.buyer` 是路由器地址**
+>
+> 路由器是曲线的实际调用者，所以经 `launchAndBuy` 的首笔 `CurveBuy` 里 `buyer` = 路由器合约地址，`recipient` = 真实收款人。直接把 `buyer` 当交易者会把**所有原子发射的开发者首单都归因到同一个地址上**。链下必须用同 tx 的 `Launched.launcher` 穿透还原。
+
+**`Rescued(address indexed asset, address indexed recipient, uint256 amount)`**
+Owner 取走滞留资产（`asset == address(0)` 表示原生 ETH）。正常流程下路由器**不留任何余额** —— 两条腿都在同一笔调用内自筹自清，曲线退回的部分也在返回前退给调用者。因此**该事件出现即代表异常**：误转入、或某次退款的返回腿失败。余额为 0 时 `revert ZeroAmount()`。
+
+---
+
 ### 无自定义事件的合约
 
 `PonsV2LauncherToken`（只有 ERC-20 的 `Transfer` / `Approval`；构造时向曲线铸造全部供应量会发出一笔 `Transfer`）、`PonsV2LaunchDeployer`、`PonsV2GraduationGuard`（无状态纯函数）。
@@ -807,17 +851,34 @@ Factory 具备完整的狙击税**发射侧**机制：`snipeTaxStartBps`（默�
 
 > 说明：`exemptFromSnipeTax(address)` 这个 `onlyFactory` setter 与 `LaunchDeployment.salt` 字段是为了让 `forge build` 通过而补上的最小改动（Factory 的版本比曲线与部署器新，缺这两处会编译失败）。补的是接收端签名，**不是业务行为**。
 
-### 2. `PonsV2FeeEscrow` 实现不在本仓库
+> **2026-09-04 复核：仍未补齐。** 本轮补入了 `V2FeeEscrow` 与 `PonsV2LaunchAndBuy`，但曲线与部署器未被修改。`grep` 确认 `currentSnipeTaxBps`、按 `block.timestamp` 的衰减逻辑、以及 `LaunchDeployment` 中的 `snipeTaxStartBps`/`snipeTaxSeconds` 字段**全部仍不存在**。
+>
+> 参照官方 v2 文档，线上部署的曲线是有这套机制的（开盘 99%、约 1 秒 25%、2 秒 3%、提供 `currentSnipeTaxBps(recipient)`）。**所以本仓库的曲线仍比线上旧。** 需要的是版本匹配的曲线实现，不是继续打补丁。
 
-只有 `IPonsV2FeeEscrow` 接口。所有协议方与创作者的费用收入、以及回购金库的释放，都依赖这个外部合约记账。部署时必须提供，且它必须同时支持原生 ETH（`credit` / `claim`）与 ERC-20（`creditToken` / `claimToken`）两套账本。
+### 2. 费用托管已补齐，但曲线与 Hook 仍指向旧接口名 ⚠️
 
-Hook 的 `_payOut` 对 ERC-20 腿会**校验托管合约的实际到账量等于名义量**（`InexactQuoteTransfer`），所以托管合约不能对入账做任何截留。
+`V2FeeEscrow.sol` 已入库，实现完整（原生 + ERC-20 双账本、实测到账入账、部分提取）。但**接口名出现了分叉**：
 
-### 3. `PonsV2LaunchDeployer.predictLaunchAddresses` 不存在
+- `V2FeeEscrow` 实现的是 `IV2FeeEscrow`；
+- 而曲线、Hook、金库、部署器导入并使用的仍是 `IPonsV2FeeEscrow`。
+
+两者**函数签名完全相同**，所以同一个部署地址对双方都可用，`forge build` 也通过 —— 这是类型层面的重复，不是功能缺陷。但它意味着编译期不再有任何一处能校验"曲线用的托管接口"与"托管实现"是同一个类型。**建议统一成一个接口名。**
+
+另外注意：Hook 的 `_payOut` 对 ERC-20 腿会**校验托管合约的实际到账量等于名义量**（`InexactQuoteTransfer`）。`V2FeeEscrow.creditToken` 按实测余额差入账，**自身不截留**，所以这条校验能通过 —— 但如果将来换成会截留的托管实现，Hook 侧会直接 revert。
+
+### 3. `interfaces/IV2FeeEscrow.sol` 是死代码
+
+该文件把 `ILaunchpadV2.sol` 里的 `FeePolicySnapshot`、`GraduationPhase`、`IERC721ReceiverLike`、`IV2LaunchFactory`、`IV2BondingCurve`、`IV2FeePolicy` 等**全部重复声明了一遍**（`IV2*` 前缀），但**没有任何文件 import 它** —— `V2FeeEscrow.sol` 导入的是 `ILaunchpadV2.sol` 中新增的那份 `IV2FeeEscrow`。
+
+因为两份声明分处不同文件且未被同时导入，Solidity 允许，编译通过。但这是真实的维护隐患：以后修改 `ILaunchpadV2.sol` 里的结构体（例如给 `LaunchedToken` 加字段）很容易漏改这一份，而编译器不会报错。
+
+**建议：删除该文件，或反过来让 `ILaunchpadV2.sol` 从它导入，保持单一来源。**
+
+### 4. `PonsV2LaunchDeployer.predictLaunchAddresses` 不存在
 
 Factory 中 `TokenParams.salt` 的文档注释指引调用者"调 `PonsV2LaunchDeployer.predictLaunchAddresses` 提前确认地址"，但该函数在本仓库中并未实现。链下需要自行按 CREATE2 规则计算（salt 为 `keccak256(abi.encode(originalDeployer, params.salt))`，initcode 为对应合约的创建码加构造参数）。
 
-### 4. `PonsV2LaunchFactory` 距 EIP-170 上限仅 402 字节
+### 5. `PonsV2LaunchFactory` 距 EIP-170 上限仅 402 字节
 
 启用 IR 管线、`optimizer_runs = 200` 时的实测运行时体积：
 
@@ -828,18 +889,20 @@ Factory 中 `TokenParams.salt` 的文档注释指引调用者"调 `PonsV2LaunchD
 | PonsV2MemeHook | 15,166 | 9,410 |
 | PonsV2BondingCurve | 9,461 | 15,115 |
 | PonsV2BuybackVault | 4,602 | 19,974 |
+| PonsV2LaunchAndBuy | 4,416 | 20,160 |
 | PonsV2GraduationExecutor | 4,402 | 20,174 |
 | PonsV2LauncherToken | 3,248 | 21,328 |
 | PonsV2GraduationGuard | 2,896 | 21,680 |
 | PonsV2LaunchLocker | 1,969 | 22,607 |
+| V2FeeEscrow | 1,932 | 22,644 |
 
 **任何对 Factory 的新增逻辑都极可能使其无法部署。** 这也解释了为什么 Deployer、Executor、Guard 会被拆成独立合约。若需扩展，应继续沿用"拆到辅助合约 + `onlyFactory`"的模式。
 
-### 5. 本仓库没有测试
+### 6. 本仓库没有测试
 
 `contractsV2` 下没有 `test/` 目录。上表体积数据与构建结果来自 `forge build`；**没有任何功能性测试被执行过**。
 
-### 6. 运维要点
+### 7. 运维要点
 
 - **`AutoGraduationFailed` 必须被监控**。跨阈值买家可以饿死自动毕业，此后该发射的卖出侧已关闭但池子还没开，需要有人调 `graduate` / `createGraduatedPool`（两者都无权限）。
 - **`feeSweepOperator` 的最小输出参数是唯一真实的抗三明治防线**，且必须依据**独立的价格来源**估算 —— `maxInternalPriceImpactBps` 只是滑点控制，会随被操纵的现价一起平移。

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 /**
- * @notice Shared pons v2 interfaces: fee escrow, fee policy, and the launch
+ * @notice Shared launchpad v2 interfaces: fee escrow, fee policy, and the launch
  * factory/curve records. Uniswap V4 core and periphery types are imported
  * directly from the vendored packages by the contracts that need them,
  * rather than re-declared here.
@@ -17,17 +17,6 @@ pragma solidity ^0.8.26;
  * pairToken is a non-native ERC-20: those curves trade and credit in that
  * asset from the first trade through to graduation.
  */
-interface IPonsV2FeeEscrow {
-    function credit(address recipient) external payable;
-    function creditToken(address recipient, address token, uint256 amount) external;
-    function claim() external returns (uint256 amount);
-    function claim(uint256 amount) external returns (uint256);
-    function claimToken(address token) external returns (uint256 amount);
-    function claimToken(address token, uint256 amount) external returns (uint256);
-    function balanceOf(address recipient) external view returns (uint256);
-    function balanceOfToken(address recipient, address token) external view returns (uint256);
-}
-
 interface IV2FeeEscrow {
     function credit(address recipient) external payable;
     function creditToken(address recipient, address token, uint256 amount) external;
@@ -57,11 +46,11 @@ struct FeePolicySnapshot {
  * meme hook. The current policy is snapshotted at launch, while the live
  * sweep operator remains rotatable for operational liveness.
  */
-interface IPonsV2FeePolicy {
+interface IV2FeePolicy {
     function protocolFeeShareBps() external view returns (uint256);
     function buybackBurnBps() external view returns (uint256);
     function protocolFeeRecipient() external view returns (address);
-    function feeEscrow() external view returns (IPonsV2FeeEscrow);
+    function feeEscrow() external view returns (IV2FeeEscrow);
     // Ceiling on how much a single internal buyback conversion is allowed
     // to move the pool's own price, read by the meme hook's real internal
     // swaps and by the bonding curve's pre-graduation buyback pricing so
@@ -72,13 +61,13 @@ interface IPonsV2FeePolicy {
 }
 
 /**
- * @notice Minimal ERC-721 receiver signature used by PonsV2LaunchLocker to
+ * @notice Minimal ERC-721 receiver signature used by V2LaunchLocker to
  * accept the graduated Uniswap V4 position NFT.
  */
 interface IERC721ReceiverLike {
     function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
-        external
-        returns (bytes4);
+    external
+    returns (bytes4);
 }
 
 /**
@@ -102,10 +91,10 @@ enum GraduationPhase {
 }
 
 /**
- * @notice Record kept by PonsV2LaunchFactory for every launch, readable by
+ * @notice Record kept by V2LaunchFactory for every launch, readable by
  * the locker and by off-chain indexers.
  */
-interface IPonsV2LaunchFactory {
+interface IV2LaunchFactory {
     struct LaunchedToken {
         address token;
         address curve;
@@ -136,7 +125,7 @@ interface IPonsV2LaunchFactory {
  * @notice Narrow surface the factory needs from a bonding curve to trigger
  * graduation once the ETH threshold has been crossed.
  */
-interface IPonsV2BondingCurve {
+interface IV2BondingCurve {
     function token() external view returns (address);
     function pairToken() external view returns (address);
     function graduationThreshold() external view returns (uint256);
