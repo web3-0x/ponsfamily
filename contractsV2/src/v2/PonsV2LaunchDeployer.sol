@@ -26,6 +26,10 @@ struct LaunchDeployment {
     bool buybackEnabled;
     uint256 graduationThreshold;
     uint256 supply;
+    // CREATE2 salt the creator chose for this launch. Namespaced per
+    // initiating account below, so it only has to be unique among that
+    // account's own launches.
+    bytes32 salt;
     string name;
     string symbol;
     string logo;
@@ -84,8 +88,12 @@ contract PonsV2LaunchDeployer {
     {
         _requireMetadataWithinLimits(params);
 
+        // Namespaced so one account's chosen salt cannot collide with, or be
+        // front-run by, another account's launch using the same value.
+        bytes32 salt = keccak256(abi.encode(params.originalDeployer, params.salt));
+
         curve = address(
-            new PonsV2BondingCurve(
+            new PonsV2BondingCurve{salt: salt}(
                 params.pairToken,
                 params.creatorFeeRecipient,
                 factory,
@@ -101,7 +109,7 @@ contract PonsV2LaunchDeployer {
             )
         );
         token = address(
-            new PonsV2LauncherToken(
+            new PonsV2LauncherToken{salt: salt}(
                 params.name,
                 params.symbol,
                 params.logo,

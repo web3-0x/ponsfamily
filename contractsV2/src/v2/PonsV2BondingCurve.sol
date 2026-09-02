@@ -74,6 +74,7 @@ contract PonsV2BondingCurve is ReentrancyGuard {
     event Initialized(address token);
     event CreatorFeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
     event BuybackEnabledUpdated(bool enabled);
+    event SnipeTaxExempted(address indexed account);
     event AutoGraduationFailed(address indexed token, uint256 gasRemaining);
 
     // Not immutable: the token's constructor needs this curve's real address,
@@ -110,6 +111,10 @@ contract PonsV2BondingCurve is ReentrancyGuard {
     uint256 public immutable creatorTaxBps;
     uint256 public immutable graduationThreshold;
     bool public buybackEnabled;
+    // Addresses the factory declared at launch as belonging to the creator's
+    // own bundle, recorded so the opening-buy snipe tax can skip them. The
+    // factory fixes this set at creation and it is never added to afterwards.
+    mapping(address => bool) public snipeTaxExempt;
 
     uint256 public quoteFeeBalance;
     // The slice of `quoteFeeBalance` already earmarked for buyback-and-lock,
@@ -293,6 +298,21 @@ contract PonsV2BondingCurve is ReentrancyGuard {
     function setBuybackEnabled(bool enabled) external onlyFactory {
         buybackEnabled = enabled;
         emit BuybackEnabledUpdated(enabled);
+    }
+
+    /**
+     * @notice Marks an address as exempt from the launch-second snipe tax.
+     * Called by the factory at creation for the creator's own addresses and
+     * for the bounded bundle list a forwarded launch declares, so an atomic
+     * dev buy is not consumed by the tax that peaks in that same second.
+     * @dev Idempotent and creation-only in practice: the factory calls this
+     * while the launch is being wired and has no path to call it later.
+     */
+    function exemptFromSnipeTax(address account) external onlyFactory {
+        if (account == address(0)) revert ZeroAddress();
+        if (snipeTaxExempt[account]) return;
+        snipeTaxExempt[account] = true;
+        emit SnipeTaxExempted(account);
     }
 
     /**
